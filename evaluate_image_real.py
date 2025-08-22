@@ -4,6 +4,9 @@ import requests
 import numpy as np
 from PIL import Image
 import torchvision.transforms as T
+from threading import Thread, Lock
+import time
+
 
 from flask import Flask, send_file, jsonify
 import io
@@ -340,47 +343,56 @@ depth_a = (d2 - d1) / (px2 - px1)
 depth_b = d1 - depth_a * px1
 
 
-
-@app.route('/objects', methods=['GET'])
-def get_scan_objects():
-    BOX_THRESHOLD = 0.15#5#0.35  0.2
-    TEXT_TRESHOLD = 0.15
-    TEXT_PROMPT = (
-        "basketball, box, clothes, fan, garbage bin, shoes, suitcases, wires, objects, people, boxes, cloth, towel, garbage, "
-        "backpack, bag, cable, charger, laptop, tablet, phone, book, magazine, bottle, cup, can, "
-        "food container, plastic bag, towel, blanket, pillow, toy, remote control, broom, dustpan, "
-        "toolbox, hammer, screwdriver, drill, extension cord, power strip, laundry basket, sock, "
-        "slipper, sandals, boots, helmet, vacuum cleaner, pet, dog, cat, leash, bowl, water dish, food bowl, "
-        "umbrella, packaging, cardboard, paper, person, "
-        "envelope, pen, pencil, notebook, folder, trash, debris, clutter, plastic container, metal object, electronic device"
-    )
-    CROP_TOP = 130 
-    image_np, crop_h, crop_w, raw_h, raw_w, boxes, logits, phrases = analyzeFrame(BOX_THRESHOLD, TEXT_TRESHOLD, TEXT_PROMPT, CROP_TOP)
+latest_scan_payload = None
+cache_lock = Lock()
 
 
-
-    # crop coords
-    boxes_int = boxes_to_int_crop(boxes, crop_w, crop_h)
-    num_beams = crop_w
-    angle_min = -h_fov / 2.0
-    angle_max =  h_fov / 2.0
-    angle_inc = (angle_max - angle_min) / float(num_beams - 1)
-    ranges = makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, crop_h)
-
-
-    payload = {
-        "angle_min": angle_min,
-        "angle_max": angle_max,
-        "angle_increment": angle_inc,
-        "range_min": min_range,
-        "range_max": max_range,
-        "ranges": ranges
-    }
-
-    return jsonify(payload)#angle_min, angle_max, angle_inc, min_range, max_range, ranges
+# @app.route('/objects', methods=['GET'])
+def get_scan_objects(poll_hz=10):
+    global latest_scan_payload
+    interval = 1.0 / poll_hz
+    while True:
+        BOX_THRESHOLD = 0.15#5#0.35  0.2
+        TEXT_TRESHOLD = 0.15
+        TEXT_PROMPT = (
+            "basketball, box, clothes, fan, garbage bin, shoes, suitcases, wires, objects, people, boxes, cloth, towel, garbage, "
+            "backpack, bag, cable, charger, laptop, tablet, phone, book, magazine, bottle, cup, can, "
+            "food container, plastic bag, towel, blanket, pillow, toy, remote control, broom, dustpan, "
+            "toolbox, hammer, screwdriver, drill, extension cord, power strip, laundry basket, sock, "
+            "slipper, sandals, boots, helmet, vacuum cleaner, pet, dog, cat, leash, bowl, water dish, food bowl, "
+            "umbrella, packaging, cardboard, paper, person, "
+            "envelope, pen, pencil, notebook, folder, trash, debris, clutter, plastic container, metal object, electronic device"
+        )
+        CROP_TOP = 130 
+        image_np, crop_h, crop_w, raw_h, raw_w, boxes, logits, phrases = analyzeFrame(BOX_THRESHOLD, TEXT_TRESHOLD, TEXT_PROMPT, CROP_TOP)
 
 
-@app.route('/walls', methods=['GET'])
+
+        # crop coords
+        boxes_int = boxes_to_int_crop(boxes, crop_w, crop_h)
+        num_beams = crop_w
+        angle_min = -h_fov / 2.0
+        angle_max =  h_fov / 2.0
+        angle_inc = (angle_max - angle_min) / float(num_beams - 1)
+        ranges = makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, crop_h)
+
+
+        payload = {
+            "angle_min": angle_min,
+            "angle_max": angle_max,
+            "angle_increment": angle_inc,
+            "range_min": min_range,
+            "range_max": max_range,
+            "ranges": ranges
+        }
+        with cache_lock:
+            latest_scan_payload = payload
+
+        time.sleep(interval)
+        # return jsonify(payload)#angle_min, angle_max, angle_inc, min_range, max_range, ranges
+
+
+# @app.route('/walls', methods=['GET'])
 def get_wall_objects():
     BOX_TRESHOLD = 0.3#5#0.35  0.2
     TEXT_TRESHOLD = 0.15
@@ -411,7 +423,26 @@ def get_wall_objects():
 
     return jsonify(payload)#angle_min, angle_max, angle_inc, min_range, max_range, ranges
 
+@app.route('/objects', methods=['GET'])
+def get_latest_scan():
+    """
+    Returns the most recent scan payload instantly.
+    If we haven’t produced one yet, return a 503 or empty scan.
+    """
+    with cache_lock:
+        data = latest_scan_payload
+
+    if data is None:
+        # No scan ready yet
+        return jsonify({"error": "no scan available"}), 503
+
+    return jsonify(data)
+
+
 if __name__ == '__main__':
+    worker = Thread(target=get_scan_objects, daemon=True)
+    worker.start()
+
     app.run(host='192.168.0.80', port=5000)
 
 # requests.get("http://192.168.0.80:5000/objects")
