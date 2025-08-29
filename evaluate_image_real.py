@@ -351,40 +351,47 @@ cache_lock = Lock()
 def get_scan_objects(poll_hz=10):
     global latest_scan_payload
     interval = 1.0 / poll_hz
+    amountOfRanges = 2 #Out of 2 scans, get the max
+    getScans = []
     while True:
-        BOX_THRESHOLD = 0.15#5#0.35  0.2
-        TEXT_TRESHOLD = 0.15
-        TEXT_PROMPT = (
-            "basketball, box, clothes, fan, garbage bin, shoes, suitcases, wires, objects, people, boxes, cloth, towel, garbage, "
-            "backpack, bag, cable, charger, laptop, tablet, phone, book, magazine, bottle, cup, can, "
-            "food container, plastic bag, towel, blanket, pillow, toy, remote control, broom, dustpan, "
-            "toolbox, hammer, screwdriver, drill, extension cord, power strip, laundry basket, sock, "
-            "slipper, sandals, boots, helmet, vacuum cleaner, pet, dog, cat, leash, bowl, water dish, food bowl, "
-            "umbrella, packaging, cardboard, paper, person, "
-            "envelope, pen, pencil, notebook, folder, trash, debris, clutter, plastic container, metal object, electronic device"
-        )
-        CROP_TOP = 130 
-        image_np, crop_h, crop_w, raw_h, raw_w, boxes, logits, phrases = analyzeFrame(BOX_THRESHOLD, TEXT_TRESHOLD, TEXT_PROMPT, CROP_TOP)
+        for i in range(amountOfRanges):
+            BOX_THRESHOLD = 0.15#5#0.35  0.2
+            TEXT_TRESHOLD = 0.15
+            TEXT_PROMPT = (
+                "basketball, box, clothes, fan, garbage bin, shoes, suitcases, wires, objects, people, boxes, cloth, towel, garbage, "
+                "backpack, bag, cable, charger, laptop, tablet, phone, book, magazine, bottle, cup, can, "
+                "food container, plastic bag, towel, blanket, pillow, toy, remote control, broom, dustpan, "
+                "toolbox, hammer, screwdriver, drill, extension cord, power strip, laundry basket, sock, "
+                "slipper, sandals, boots, helmet, vacuum cleaner, pet, dog, cat, leash, bowl, water dish, food bowl, "
+                "umbrella, packaging, cardboard, paper, person, "
+                "envelope, pen, pencil, notebook, folder, trash, debris, clutter, plastic container, metal object, electronic device"
+            )
+            CROP_TOP = 130 
+            image_np, crop_h, crop_w, raw_h, raw_w, boxes, logits, phrases = analyzeFrame(BOX_THRESHOLD, TEXT_TRESHOLD, TEXT_PROMPT, CROP_TOP)
 
 
 
-        # crop coords
-        boxes_int = boxes_to_int_crop(boxes, crop_w, crop_h)
-        num_beams = crop_w
-        angle_min = -h_fov / 2.0
-        angle_max =  h_fov / 2.0
-        angle_inc = (angle_max - angle_min) / float(num_beams - 1)
-        ranges = makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, crop_h)
+            # crop coords
+            boxes_int = boxes_to_int_crop(boxes, crop_w, crop_h)
+            num_beams = crop_w
+            angle_min = -h_fov / 2.0
+            angle_max =  h_fov / 2.0
+            angle_inc = (angle_max - angle_min) / float(num_beams - 1)
+            ranges = makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, crop_h)
 
-
-        payload = {
-            "angle_min": angle_min,
-            "angle_max": angle_max,
-            "angle_increment": angle_inc,
-            "range_min": min_range,
-            "range_max": max_range,
-            "ranges": ranges
-        }
+            if len(getScans) == 0:
+                getScans = ranges  
+            else:
+                if len(ranges) > 0 and len(ranges) == len(getScans):
+                    getScans = [max(getScans[j], ranges[j]) for j in range(len(getScans))]
+            payload = {
+                "angle_min": angle_min,
+                "angle_max": angle_max,
+                "angle_increment": angle_inc,
+                "range_min": min_range,
+                "range_max": max_range,
+                "ranges": getScans
+            }
         with cache_lock:
             latest_scan_payload = payload
 
