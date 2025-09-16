@@ -6,7 +6,7 @@ from PIL import Image
 import torchvision.transforms as T
 from threading import Thread, Lock
 import time
-
+import threading
 
 from flask import Flask, send_file, jsonify
 import io
@@ -351,11 +351,12 @@ cache_lock = Lock()
 def get_scan_objects(poll_hz=10):
     global latest_scan_payload
     interval = 1.0 / poll_hz
-    amountOfRanges = 2 #Out of 2 scans, get the max
-    getScans = []
+    amountOfRanges = 1 #Out of 2 scans, get the max
+    
     while True:
+        getScans = []
         for i in range(amountOfRanges):
-            BOX_THRESHOLD = 0.15#5#0.35  0.2
+            BOX_THRESHOLD = 0.225 # 0.25
             TEXT_TRESHOLD = 0.15
             TEXT_PROMPT = (
                 "basketball, box, clothes, fan, garbage bin, shoes, suitcases, wires, objects, people, boxes, cloth, towel, garbage, "
@@ -390,13 +391,13 @@ def get_scan_objects(poll_hz=10):
                 "angle_increment": angle_inc,
                 "range_min": min_range,
                 "range_max": max_range,
-                "ranges": getScans
+                "ranges": getScans # getScans
             }
-        with cache_lock:
-            latest_scan_payload = payload
+            with cache_lock:
+                latest_scan_payload = payload
 
-        time.sleep(interval)
-        # return jsonify(payload)#angle_min, angle_max, angle_inc, min_range, max_range, ranges
+            time.sleep(interval)
+            # return jsonify(payload)#angle_min, angle_max, angle_inc, min_range, max_range, ranges
 
 
 # @app.route('/walls', methods=['GET'])
@@ -446,148 +447,73 @@ def get_latest_scan():
     return jsonify(data)
 
 
-if __name__ == '__main__':
+@app.route('/blocked', methods=['GET'])
+def get_blocked():
+    """
+    Returns the most recent scan payload instantly.
+    If we haven’t produced one yet, return a 503 or empty scan.
+    """
+    with cache_lock:
+        data = latest_scan_payload
+
+    if data is None:
+        # No scan ready yet
+        return jsonify({"error": "no scan available"}), 503
+    
+    # If 50% blocked, return true, else false
+    ranges = data["ranges"]
+    thresholdInside = 1 # percent
+    threshold = 0.2 #0.5
+    blockCalc = sum(1 for r in ranges if r < thresholdInside) / len(ranges)
+    blocked = (blockCalc) > threshold
+    data = {"blocked": blocked, "Calc": round(blockCalc,2)}
+
+
+    return jsonify(data)
+
+
+# ranges = [10,0,0,0]
+# blocked = sum(1 for r in ranges if r < threshold) / len(ranges) > threshold
+
+
+worker = None
+
+def start_worker():
+    global worker
+    # if there’s already a live thread, do nothing
+    if worker and worker.is_alive():
+        return
+
+    print("Starting scan thread…")
     worker = Thread(target=get_scan_objects, daemon=True)
     worker.start()
 
-    app.run(host='192.168.0.80', port=5000)
+def check_and_restart_worker():
+    # call this periodically, e.g. from your main loop or a Timer
+    if not worker or not worker.is_alive():
+        print("Scan thread died—restarting")
+        start_worker()
+
+import threading
+
+def monitor():
+    check_and_restart_worker()
+    threading.Timer(5, monitor).start()
+
+
+if __name__ == '__main__':
+    # worker = Thread(target=get_scan_objects, daemon=True)
+    # worker.start()
+    # start_worker()
+
+    # while True:
+    #     check_and_restart_worker()
+    #     time.sleep(5)     # every 5 seconds, ensure it's alive
+    start_worker()
+    monitor()  
+    app.run(host='192.168.0.80', port=5000, threaded=True, use_reloader=False)
 
 # requests.get("http://192.168.0.80:5000/objects")
 
 
 
-
-
-"""
-boxes_np = boxes.cpu().numpy()
-# 1) scale normalized centres+sizes → pixel units
-boxes_pix = boxes_np.copy()
-boxes_pix[:, [0, 2]] *= crop_w    #  cx,   w
-boxes_pix[:, [1, 3]] *= crop_h    #  cy,   h
-
-cx = boxes_pix[:, 0]
-cy = boxes_pix[:, 1]
-w  = boxes_pix[:, 2]
-h  = boxes_pix[:, 3]
-
-# 2) compute corners
-x0 = cx - w/2
-x1 = cx + w/2
-y0 = cy - h/2
-y1 = cy + h/2
-
-boxes_rescaled = np.stack([x0, y0, x1, y1], axis=1)
-
-# 3) clip to image bounds and convert to ints
-boxes_rescaled[:, [0,2]] = boxes_rescaled[:, [0,2]].clip(0, crop_w)
-boxes_rescaled[:, [1,3]] = boxes_rescaled[:, [1,3]].clip(0, crop_h)
-boxes_int = boxes_rescaled.astype(int)
-
-
-boxes_full_int = boxes_int.copy()
-boxes_full_int[:, [1,3]] += CROP_TOP
-
-
-mask_stack = np.zeros((len(boxes_full_int), raw_h, raw_w), dtype=np.uint8)
-
-for i, (x0, y0, x1, y1) in enumerate(boxes_int):
-    # fill that rectangle region with 1s
-    mask_stack[i, y0:y1, x0:x1] = 1
-
-# combined mask: anywhere any box covers
-combined_mask = (mask_stack.any(axis=0).astype(np.uint8) * 255)
-
-# overlay in green
-overlay = image_np.copy()
-overlay[combined_mask > 0] = [0, 255, 0]
-cv2.imwrite(fr"{annotatedPath}\overlay_boxes_only.png", overlay) #This works for just boxes
-
-
-
-
-
-
-
-# https://github.com/facebookresearch/segment-anything
-
-
-# Load SAM model (ViT-B is a good starting point)
-# https://github.com/facebookresearch/segment-anything#model-checkpoints
-sam_checkpoint = r"C:\Users\ringk\OneDrive\Documents\sam_vit_h_4b8939.pth"  # Download from Meta's GitHub
-model_type = "vit_h"
-
-sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-sam.to("cuda")  # or "cpu" if no GPU
-predictor = SamPredictor(sam)
-
-
-
-# predictor.set_image(image_np)
-# SAM wants an RGB H×W×3 numpy
-image_rgb = cv2.cvtColor(image_np, cv2.COLOR_BGR2RGB)
-predictor.set_image(image_rgb)
-
-
-boxes_torch = torch.from_numpy(boxes_int).to(predictor.device)
-boxes_for_sam = predictor.transform.apply_boxes_torch(
-    boxes_torch,
-    (raw_h, raw_w)       # original H×W
-)
-
-
-
-# SAM --> Segment Anything Model expects boxes in absolute pixel coordinates
-# transformed_boxes = predictor.transform.apply_boxes_torch(boxes, image.shape[-2:]).cpu().numpy()
-
-masks, _, _ = predictor.predict_torch(
-    point_coords=None,
-    point_labels=None,
-    boxes=torch.tensor(boxes_for_sam, device=predictor.device),
-    multimask_output=False
-)
-
-
-
-# height, width = predictor.original_size
-# combined_mask = np.zeros((height, width), dtype=np.uint8)
-
-# for mask in masks:
-#     mask_np = mask.squeeze().cpu().numpy().astype(np.uint8)
-#     resized_mask = cv2.resize(mask_np, (width, height), interpolation=cv2.INTER_NEAREST)
-#     combined_mask = np.maximum(combined_mask, resized_mask)
-
-# combined_mask *= 255
-# cv2.imwrite(fr"{annotatedPath}\combined_mask.png", combined_mask)
-
-# # Overlay on resized image
-# resized_image = cv2.resize(image_np, (width, height))
-# overlay = resized_image.copy()
-# overlay[combined_mask > 0] = [0, 255, 0]
-# cv2.imwrite(fr"{annotatedPath}\overlay.png", overlay)
-# https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb
-# 1) Move masks to CPU
-masks_torch = masks.to("cpu")
-H_pad, W_pad = predictor.input_size
-# 2) Post-process to original size
-processed_masks = postprocess_masks(
-    masks=masks_torch,
-    original_size=(raw_h, raw_w),
-    input_size=(H_pad, W_pad)
-)
-
-# overlayed = overlay_masks_cv2(image_np, processed_masks, color=(30,144,255), alpha=0.6)
-# cv2.imwrite(fr"{annotatedPath}\overlay_corrected.png", overlayed)
-
-# processed_masks: list of N arrays, each H×W = raw size
-
-# 3) Combine & overlay
-
-mask_stack = np.stack(processed_masks, axis=0)      # shape = (N, H, W)
-
-combined_mask = (mask_stack.any(axis=0).astype(np.uint8) * 255)
-
-overlay = image_np.copy()
-overlay[combined_mask > 0] = [0, 255, 0]
-cv2.imwrite(fr"{annotatedPath}\overlay_corrected.png", overlay)
-
-"""
