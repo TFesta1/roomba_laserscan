@@ -287,20 +287,27 @@ def makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, cro
 
         # or if you measured from the image bottom:
         pixel_offset = (crop_h - 1) - bottom_y
+        # if pixel_offset < 0:
+        #     print(f"pixel_offset {pixel_offset} (crop_h - 1)  {(crop_h - 1) } bottom_y {bottom_y}")
+
 
         dist = depth_a * pixel_offset + depth_b
-        dist = max(min_range, min(dist, max_range))
+        # dist = max(min_range, min(dist, max_range))
         ranges[i] = dist
 
+    # -0.443 kind of 75% down
+    # -0.99513915 95% near bottom
+    # -1.30757053 close enough to bottom
 
     # Ensure ranges are in range and clamp to max if 0.
     raw = np.array(ranges)
+    # print(f"raw ranges min {raw.min()} max {raw.max()} --> raw {raw}")
 
     # replace zeros (or negatives) with your max_range
-    raw[raw <= 0] = min_range
+    # raw[raw <= 0] = min_range
 
     # clamp into [min_range, max_range]
-    raw = np.clip(raw, min_range, max_range)
+    # raw = np.clip(raw, newMin, max_range)
 
     clean_ranges = raw.tolist()
 
@@ -318,6 +325,8 @@ def makeRanges(min_range, max_range, num_beams, depth_a, depth_b, boxes_int, cro
 cam_height = 0.1397
 cam_pitch = math.radians(-10)
 min_range = 0.0
+newMin = -0.99513915 #Calculated estimate
+
 max_range = 10.0
 kernal_smoothing = 50
 # h_fov = math.radians(90)
@@ -463,11 +472,11 @@ def get_blocked():
     
     # If 50% blocked, return true, else false
     ranges = data["ranges"]
-    thresholdInside = 1 # percent
-    threshold = 0.2 #0.5
+    thresholdInside = newMin # percent
+    threshold = 0.7 #0.5
     blockCalc = sum(1 for r in ranges if r < thresholdInside) / len(ranges)
-    blocked = (blockCalc) > threshold
-    data = {"blocked": blocked, "Calc": round(blockCalc,2)}
+    blocked = (blockCalc) >= threshold
+    data = {"blocked": blocked, "Calc": round(blockCalc,2), "ranges": ranges}
 
     print(f"blocked {blocked}")
     return jsonify(data)
@@ -515,6 +524,4 @@ if __name__ == '__main__':
     app.run(host='192.168.0.80', port=5000) #threaded=True, use_reloader=False
 
 # requests.get("http://192.168.0.80:5000/objects")
-
-
-
+# requests.get("http://192.168.0.80:5000/blocked")
